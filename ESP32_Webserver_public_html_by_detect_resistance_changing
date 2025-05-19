@@ -1,0 +1,196 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// Fixed IP configuration
+IPAddress local_ip(192, 168, 40, 1);
+IPAddress gateway(192, 168, 40, 1);
+IPAddress subnet(255, 255, 255, 0);
+
+WebServer server(80);
+
+// Configuration
+const char* ssid = "ESP32_Voltage_Monitor";
+const char* password = "esp32password";
+const int analogPin = 34; // GPIO34 for analog input
+const int sampleInterval = 100; // Sample every 100ms
+
+// Variables
+unsigned long lastSampleTime = 0;
+float voltage = 0.0; // Measured voltage (0-5V)
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Configure ADC for 0-5V range (requires voltage divider)
+  analogReadResolution(12); // 12-bit resolution (0-4095)
+  analogSetAttenuation(ADC_11db); // 0-3.3V range
+  
+  // Configure WiFi as Access Point
+  WiFi.softAP(ssid, password);
+  WiFi.softAPConfig(local_ip, gateway, subnet);
+  
+  Serial.println("");
+  Serial.print("AP IP address: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Set up server routes
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  server.handleClient();
+  
+  // Sample the analog input at regular intervals
+  unsigned long currentTime = millis();
+  if (currentTime - lastSampleTime >= sampleInterval) {
+    lastSampleTime = currentTime;
+    
+    // Read analog value and convert to voltage (0-5V)
+    // Note: For direct 0-5V measurement, use a voltage divider (e.g., 100k/220k)
+    int rawValue = analogRead(analogPin);
+    voltage = (rawValue * 3.3 / 4095.0) * (5.0 / 3.3); // Adjust for 5V range
+    
+    // Debug output
+    Serial.print("Voltage: ");
+    Serial.print(voltage);
+    Serial.println("V");
+  }
+}
+
+void handleRoot() {
+  String html = R"=====(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP32 Voltage Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+      text-align: center;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #2c3e50;
+      margin-bottom: 30px;
+    }
+    .voltage-display {
+      font-size: 28px;
+      font-weight: bold;
+      margin: 20px 0;
+      color: #2c3e50;
+    }
+    .voltage-bar {
+      height: 40px;
+      width: 100%;
+      background: linear-gradient(to right, 
+        #00ff00 0%, 
+        #ffff00 50%, 
+        #ff0000 100%);
+      border-radius: 20px;
+      margin: 20px 0;
+      overflow: hidden;
+      position: relative;
+      box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+    }
+    .voltage-level {
+      height: 100%;
+      width: 0%;
+      background-color: rgba(255,255,255,0.7);
+      position: absolute;
+      right: 0;
+      transition: width 0.3s ease;
+    }
+    .scale {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 5px;
+      color: #7f8c8d;
+    }
+    .refresh-rate {
+      margin-top: 20px;
+      color: #7f8c8d;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESP32 Voltage Monitor</h1>
+    <div class="voltage-display">
+      <span id="voltageValue">0.00</span> V
+    </div>
+    <div class="voltage-bar">
+      <div class="voltage-level" id="voltageBar"></div>
+    </div>
+    <div class="scale">
+      <span>0V</span>
+      <span>2.5V</span>
+      <span>5V</span>
+    </div>
+    <div class="refresh-rate">Updating every 500ms</div>
+  </div>
+
+  <script>
+    // Function to update the display
+    function updateDisplay(voltage) {
+      // Update voltage value
+      document.getElementById('voltageValue').textContent = voltage.toFixed(2);
+      
+      // Calculate percentage (0-5V range)
+      let percent = (voltage / 5.0) * 100;
+      if (percent > 100) percent = 100;
+      if (percent < 0) percent = 0;
+      
+      // Update voltage bar (inverse percentage)
+      document.getElementById('voltageBar').style.width = (100 - percent) + '%';
+    }
+
+    // Fetch new data periodically
+    function fetchData() {
+      fetch('/data')
+        .then(response => {
+          if (!response.ok) throw new Error('Network error');
+          return response.json();
+        })
+        .then(data => {
+          updateDisplay(data.voltage);
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          setTimeout(fetchData, 1000); // Retry after 1 second on error
+        });
+    }
+
+    // Update every 500ms
+    setInterval(fetchData, 500);
+    
+    // Initial fetch
+    fetchData();
+  </script>
+</body>
+</html>
+)=====";
+
+  server.send(200, "text/html", html);
+}
+
+void handleData() {
+  // Create JSON response with current voltage
+  String jsonResponse = "{\"voltage\":" + String(voltage) + "}";
+  server.send(200, "application/json", jsonResponse);
+}
